@@ -20,13 +20,10 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
-	"runtime/pprof"
-	"time"
 
 	"github.com/sourcegraph/zoekt"
 	"github.com/sourcegraph/zoekt/query"
-	"github.com/sourcegraph/zoekt/shards"
+	"github.com/sourcegraph/zoekt/rpc"
 )
 
 func displayMatches(files []zoekt.FileMatch, pat string, withRepo bool, list bool) {
@@ -77,14 +74,7 @@ func loadShard(fn string, verbose bool) (zoekt.Searcher, error) {
 }
 
 func main() {
-	shard := flag.String("shard", "", "search in a specific shard")
-	index := flag.String("index_dir",
-		filepath.Join(os.Getenv("HOME"), ".zoekt"), "search for index files in `directory`")
-	cpuProfile := flag.String("cpu_profile", "", "write cpu profile to `file`")
-	profileTime := flag.Duration("profile_time", time.Second, "run this long to gather stats.")
 	verbose := flag.Bool("v", false, "print some background data")
-	withRepo := flag.Bool("r", false, "print the repo before the file name")
-	list := flag.Bool("l", false, "print matching filenames only")
 
 	flag.Usage = func() {
 		name := os.Args[0]
@@ -102,17 +92,7 @@ func main() {
 	}
 	pat := flag.Arg(0)
 
-	var searcher zoekt.Searcher
-	var err error
-	if *shard != "" {
-		searcher, err = loadShard(*shard, *verbose)
-	} else {
-		searcher, err = shards.NewDirectorySearcher(*index)
-	}
-
-	if err != nil {
-		log.Fatal(err)
-	}
+	searcher := rpc.Client("localhost:6070")
 
 	query, err := query.Parse(pat)
 	if err != nil {
@@ -122,39 +102,12 @@ func main() {
 		log.Println("query:", query)
 	}
 
-	var sOpts zoekt.SearchOptions
+	sOpts := zoekt.SearchOptions{ChunkMatches: true, NumContextLines: 1}
 	sres, err := searcher.Search(context.Background(), query, &sOpts)
-	if *cpuProfile != "" {
-		// If profiling, do it another time so we measure with
-		// warm caches.
-		f, err := os.Create(*cpuProfile)
-		if err != nil {
-			log.Fatal(err)
-		}
-		defer f.Close()
-		if *verbose {
-			log.Println("Displaying matches...")
-		}
-
-		t := time.Now()
-		if err := pprof.StartCPUProfile(f); err != nil {
-			log.Fatal(err)
-		}
-		for {
-			sres, _ = searcher.Search(context.Background(), query, &sOpts)
-			if time.Since(t) > *profileTime {
-				break
-			}
-		}
-		pprof.StopCPUProfile()
-	}
 
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	displayMatches(sres.Files, pat, *withRepo, *list)
-	if *verbose {
-		log.Printf("stats: %#v", sres.Stats)
-	}
+	fmt.Printf("%s", sres.Files[0].ChunkMatches[0].Content)
 }
